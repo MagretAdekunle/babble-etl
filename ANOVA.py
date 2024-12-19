@@ -217,7 +217,17 @@ def main():
         # print(f"length of chunk_iter: {sum(1 for _ in chunk_iter)}")
 
         # let other ranks know pre-processing is finished; they ask for work
-        print("Rank 0 is done preprocessing, dispatching chunks to workers")
+        print("R0 sending header combinations to all worker ranks")
+        for i in range(1, SIZE):
+            COMM.send(header_combinations, dest=i)
+
+        pre_responses = 0
+        while pre_responses != (SIZE - 1):
+            response = COMM.recv(source=MPI.ANY_SOURCE)
+            if response == "combinations received!":
+                pre_responses += 1
+
+        print("R0 dispatching chunks...")
         for i in range(1, SIZE):
             COMM.send("request work", dest=i)
 
@@ -248,6 +258,9 @@ def main():
         print("combine here todo")
 
     else:
+        header_combinations = COMM.recv(source=0)  # get header_combinations
+        COMM.send("combinations received!", dest=0)
+
         COMM.recv(source=0)  # wait for rank 0 to finish pre-processing
         COMM.send("ready", dest=0)
         MPI_processing()
