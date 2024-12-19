@@ -1,6 +1,8 @@
 import pandas as pd
 import ast
 import gc
+import os
+import subprocess
 
 from mpi4py import MPI
 from itertools import combinations
@@ -113,6 +115,33 @@ def run_anova_parallel(args):
         return None
 
 
+def run_anova(chunk, combinations, response_col):
+    for combo in combinations:
+        try:
+            column_names = chunk[list(combo) + [response_col]]
+        except KeyError:
+            # skip combinations with missing columns
+            continue
+
+        # check if there's enough data in the columns
+        if column_names.isnull().sum().sum() > 0:
+            print(f"Skipping combination {combo} due to missing data")
+            continue
+
+        # construct ANOVA formula
+        formula = f"{response_col} ~ " + " * ".join(combo)
+
+        try:
+            model = ols(formula, data=column_names).fit()
+            anova_result = anova_lm(model)
+
+            anova_result["Combination"] = str(combo)
+
+            return anova_result
+        except Exception as e:
+            print(f"Error with combination {combo}: {e}")
+
+
 def process_csv(
     csv_file, header_combinations, response_col="Babble_Length", chunksize=50000
 ):
@@ -158,8 +187,8 @@ def process_csv_MPI(
     """
     chunk = clean_and_prepare_data(chunk)
 
-    args = [(chunk, combo, response_col) for combo in header_combinations]
-    partial_results = (run_anova_parallel, args)
+    # args = [(chunk, combo, response_col) for combo in header_combinations]
+    partial_results = run_anova(chunk, header_combinations, response_col)
     pass
 
 
@@ -180,7 +209,9 @@ def filter_significant_results(
     print(f"\nSignificant ANOVA results saved to '{output_file}'")
 
 
-def MPI_processing():
+def MPI_processing(header_combinations):
+    response_col = "Babble_Length"
+
     while True:
         COMM.send(RANK, dest=0)  # tell root where to send chunk data
         chunk = COMM.recv(source=0)
@@ -188,7 +219,15 @@ def MPI_processing():
         if isinstance(chunk, pd.DataFrame):
             print(f"R{RANK} is cleaning chunk data")
             chunk = clean_and_prepare_data(chunk)
-            print(f"R{RANK} cleaned a chunk")
+            # args = [(chunk, combo, response_col) for combo in header_combinations]
+
+            # work loop
+            partial_results = run_anova(chunk, header_combinations, response_col)
+
+            # write partial results to disk
+            # pd.concat(partial_results).to_csv(f"results_{RANK}.csv", index=False)
+            partial_results.to_csv(f"results_{RANK}.csv", mode="a", header=False)
+
         else:
             # received stop message (string) from R0, stop work
             print(f"R{RANK} has no more work to do")
@@ -208,8 +247,13 @@ def main():
             "Date_on_vocalization_2",
             "",
         ]
-        response_col = "Babble_Length"
 
+        try:
+            os.remove("merged_results.csv")
+        except:
+            pass
+
+        subprocess.run(["rm results_*.csv"], shell=True)
         # Precompute header combinations
         header_combinations = get_header_combinations(csv_file, exclude_headers)
 
@@ -256,6 +300,8 @@ def main():
 
         # read combinations written by worker ranks and aggregate to one file
         print("combine here todo")
+        print("R0 is combining results")
+        subprocess.run(["cat results_*.csv >> merged_results.csv"], shell=True)
 
     else:
         header_combinations = COMM.recv(source=0)  # get header_combinations
@@ -263,7 +309,7 @@ def main():
 
         COMM.recv(source=0)  # wait for rank 0 to finish pre-processing
         COMM.send("ready", dest=0)
-        MPI_processing()
+        MPI_processing(header_combinations)
 
 
 if __name__ == "__main__":
