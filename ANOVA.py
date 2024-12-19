@@ -13,7 +13,7 @@ COMM = MPI.COMM_WORLD
 SIZE = COMM.Get_size()
 RANK = COMM.Get_rank()
 
-CHUNKSIZE = 50000
+CHUNKSIZE = 50
 
 
 def clean_and_prepare_data(chunk):
@@ -185,20 +185,28 @@ def MPI_processing():
         COMM.send(RANK, dest=0)  # tell root where to send chunk data
         chunk = COMM.recv(source=0)
 
-        if chunk == "no more chunks":
+        if isinstance(chunk, pd.DataFrame):
+            print(f"R{RANK} is cleaning chunk data")
+            chunk = clean_and_prepare_data(chunk)
+            print(f"R{RANK} cleaned a chunk")
+        else:
+            # received stop message (string) from R0, stop work
             print(f"R{RANK} has no more work to do")
-            COMM.send("proceed to post-processing", dest=0)
+            COMM.send("done", dest=0)
             break
 
-        print(f"R{RANK} is cleaning chunk data")
-        chunk = clean_and_prepare_data(chunk)
 
-
-def main() -> None:
+def main():
     if RANK == 0:
+        print(f"running with {SIZE} ranks")
+        print("Rank 0 is preprocessing...")
         csv_file = "CMBabble_Master_combined.csv"
-        exclude_headers[
-            "Babbles, Bout_ID", "Notes", "Raven work", "Date_on_vocalization_2", ""
+        exclude_headers = [
+            "Babbles, Bout_ID",
+            "Notes",
+            "Raven work",
+            "Date_on_vocalization_2",
+            "",
         ]
         response_col = "Babble_Length"
 
@@ -206,8 +214,10 @@ def main() -> None:
         header_combinations = get_header_combinations(csv_file, exclude_headers)
 
         chunk_iter = pd.read_csv(csv_file, chunksize=CHUNKSIZE)
+        # print(f"length of chunk_iter: {sum(1 for _ in chunk_iter)}")
 
         # let other ranks know pre-processing is finished; they ask for work
+        print("Rank 0 is done preprocessing, dispatching chunks to workers")
         for i in range(1, SIZE):
             COMM.send("request work", dest=i)
 
@@ -226,11 +236,13 @@ def main() -> None:
         for i in range(1, SIZE):
             COMM.send("no more chunks", dest=i)
 
+        print(f"R0 sent stop messages to {SIZE - 1} workers")
         current_responses = 0
         while current_responses != (SIZE - 1):
             response = COMM.recv(source=MPI.ANY_SOURCE)
             if response == "done":
                 current_responses += 1
+                print(f"R0 heard from {current_responses} workers")
 
         # read combinations written by worker ranks and aggregate to one file
         print("combine here todo")
@@ -242,25 +254,26 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    main()
     # csv_file = "CMBabble_Master_clean.csv"
-    csv_file = "CMBabble_Master_combined.csv"
-    exclude_headers = [
-        "Babbles",
-        "Bout_ID",
-        "Notes",
-        "Raven work",
-        "Date_on_vocalization_2",
-        "",
-    ]
-    response_col = "Babble_Length"
-
-    # Precompute header combinations
-    header_combinations = get_header_combinations(csv_file, exclude_headers)
-
-    # Process the file and run ANOVA
-    process_csv(csv_file, header_combinations, response_col)
-
-    # Filter significant results
-    filter_significant_results(
-        file="partial_anova_results.csv", output_file="filtered_file.csv"
-    )
+    # csv_file = "CMBabble_Master_combined.csv"
+    # exclude_headers = [
+    #     "Babbles",
+    #     "Bout_ID",
+    #     "Notes",
+    #     "Raven work",
+    #     "Date_on_vocalization_2",
+    #     "",
+    # ]
+    # response_col = "Babble_Length"
+    #
+    # # Precompute header combinations
+    # header_combinations = get_header_combinations(csv_file, exclude_headers)
+    #
+    # # Process the file and run ANOVA
+    # process_csv(csv_file, header_combinations, response_col)
+    #
+    # # Filter significant results
+    # filter_significant_results(
+    #     file="partial_anova_results.csv", output_file="filtered_file.csv"
+    # )
